@@ -1,0 +1,8 @@
+# Pinned at Stage 1. Exact installed versions are recorded in docs/VERSIONS.md.
+cocotb==1.9.2
+numpy
+scipy
+scikit-learn
+matplotlib
+pandas
+torch

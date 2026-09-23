@@ -1,0 +1,12 @@
+sim_build/
+__pycache__/
+*.pyc
+.venv/
+*.vcd
+*.fst
+
+# cocotb's JUnit XML embeds wall-clock timing, so it differs on every run and
+# produces noisy diffs. The coverage artifacts beside it are deterministic
+# (verified: byte-identical across reruns and across both simulators) and are
+# committed as the actual raw data.
+results/**/results_*.xml
