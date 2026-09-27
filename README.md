@@ -5,11 +5,47 @@ literature: that if you choose simulation stimuli by how *novel* they are, you
 hit a functional coverage target in fewer simulations than if you choose them
 at random.
 
-My background is ML, not hardware. Learning the verification side is half the
-point of doing this, so there are probably things in here a real verification
-engineer would do differently.
+The testbench is Python, using cocotb, and everything runs locally on free
+tools. Every number below comes out of a script in `scripts/`, and where
+something hasn't been measured I've tried to say so.
 
-Papers I'm working from:
+**Status: Stage 2 of 7.** No claim about novelty selection yet. That starts at
+Stage 5.
+
+## What's working so far
+
+- A Python testbench driving both Verilator and Icarus, writing functional
+  coverage to disk after every test as a fixed-length binary vector (Stage 1).
+- 15/15 functional coverage bins and 14/14 Verilator code coverage points on
+  the Stage 1 smoke-test design, with 0 mismatches against a Python reference
+  model checked every clock cycle.
+- The design under test chosen, and its coverage headroom measured before
+  writing any coverage model: 50 simulations, 0 mismatches, showing that
+  unbiased random stimulus never pushes the FIFO past about 36 entries no
+  matter how deep the FIFO actually is (Stage 2).
+
+## What this project isn't
+
+Worth saying early, since anyone who does verification for a living would
+notice anyway.
+
+- **No SystemVerilog, no UVM.** The testbench is Python with cocotb. That was a
+  constraint I set myself, but it does mean this repo doesn't show the
+  SystemVerilog and UVM skills most verification job ads ask for.
+- **Open source simulators only.** Verilator and Icarus, not Xcelium or VCS.
+  The coverage model in `simlib/covmodel.py` is a hand-rolled stand-in for what
+  would normally be a SystemVerilog covergroup.
+- **Small design.** A 486-line FIFO. The papers I'm working from used a
+  commercial DSP unit and a commercial bus bridge, so anything I get here is at
+  a much smaller scale than what they report.
+- **No assertions, no formal.** The FIFO I vendored actually ships with formal
+  properties and I'm not using them.
+
+The ML method is the part I'd defend. The verification side I'm picking up as I
+go, so some of it is probably done in ways a real verification engineer
+wouldn't choose.
+
+## Papers I'm working from
 
 - Zheng, Eder & Blackmore, [Using Neural Networks for Novelty-based Test Selection](https://arxiv.org/abs/2207.00445).
   They report up to 49.37% fewer simulations to reach 99.5% coverage on a
@@ -17,14 +53,10 @@ Papers I'm working from:
 - Zheng, Blackmore, Buckingham & Eder, [Detecting Stimuli with Novel Temporal Patterns](https://arxiv.org/abs/2407.02510).
   26.9% fewer tests to 98.5% on a bus bridge. This one scores novelty on the
   temporal pattern rather than a static feature vector, which is closer to the
-  GRU autoencoder I've built before.
-
-Everything runs locally on free tools. There's no SystemVerilog in the
-project. The testbench is Python, driven by cocotb.
-
-**Status: Stage 1 of 7.** I'm not claiming anything yet. Every number below
-comes from a script in `scripts/`, and where something isn't measured I've
-tried to say so.
+  GRU autoencoder I have built before.
+- Bennett & Eder, [Review of Machine Learning for Micro-Electronic Design Verification](https://arxiv.org/abs/2503.11687),
+  for background on why most of these techniques haven't reached mainstream
+  industry use.
 
 ## Setup
 
@@ -36,6 +68,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 Versions are in [docs/VERSIONS.md](docs/VERSIONS.md). Short version: Verilator
 5.020, Icarus Verilog 12.0 as a fallback, cocotb 1.9.2, Python 3.12.3.
+
+Add `--waves` to dump a waveform and open it in GTKWave:
+
+```bash
+.venv/bin/python scripts/01_smoke_test.py --sim verilator --seed 1 --waves
+gtkwave results/stage1/waves_seed1.vcd
+```
 
 ## Code coverage vs functional coverage
 
@@ -55,15 +94,14 @@ but only as a sanity check.
 ## Stage 1: does the toolchain work
 
 No ML in this stage. The only goal was to get a simulation running from Python
-with coverage landing on disk, because I'd been warned this is where projects
-like this stall. That warning was correct. It took most of a weekend and
-almost none of it was interesting.
+with coverage landing on disk, because I had been warned this is where projects
+like this stall. That warning was correct. It took most of a weekend and almost
+none of it was interesting.
 
 The design here is throwaway. [`rtl/counter.v`](rtl/counter.v) is an 8-bit
 counter with a count enable, synchronous load, asynchronous active-low reset
 and a wrap flag. I wrote it in Verilog-2001 rather than SystemVerilog so both
-simulators would take it without extra flags. The real design under test gets
-picked in Stage 2.
+simulators would take it without extra flags.
 
 ```bash
 .venv/bin/python scripts/01_smoke_test.py --sim verilator --seed 1
@@ -94,7 +132,7 @@ Writing these down because most of them failed quietly instead of erroring.
 testbench drove signals directly in between phases, and one clock edge slipped
 past unobserved while `en` was still high. The reference model missed that
 increment and then stayed one behind the DUT for the rest of the run, so
-everything after that point looked like a failure. The fix wasn't local: every
+everything after that point looked like a failure. The fix was not local: every
 cycle now goes through a single `CounterEnv.step()` that drives, advances,
 updates the reference model and samples coverage, so there's nowhere for an
 edge to hide.
@@ -112,17 +150,92 @@ the comment describes a newer version. So `coverage.dat` has to be collected
 from the simulation's working directory instead.
 
 **Icarus needs a timescale.** It has no default, so a 10 ns clock isn't
-representable and the test dies with a precision error. Verilator doesn't care.
-Passing the timescale from the runner instead of putting it in the RTL keeps
-the design simulator-neutral.
+representable and the test dies with a precision error. Verilator doesn't
+care. Passing the timescale from the runner instead of putting it in the RTL
+keeps the design simulator-neutral.
+
+## Stage 2: picking the design under test
+
+Three candidates, all open source and small enough to read in an evening.
+
+| | Sync FIFO | Round-robin arbiter | AXI-Lite to WB bridge |
+|---|---|---|---|
+| Source | ZipCPU `sfifo.v` | alexforencich `arbiter.v` | ZipCPU `axlite2wbsp.v` |
+| Size | 486 lines, 1 file | ~245 lines, 2 files | ~450 lines, 5 to 6 files |
+| License | public domain | MIT | Apache-2.0 |
+| Stimulus difficulty | low, 2 control bits | low to medium | high, 5-channel protocol |
+| Hard states are | temporal | mostly combinational | temporal plus protocol |
+
+I went with the FIFO. Its hard states need a pattern rather than one lucky
+cycle, the stimulus is two bits wide so I can't drive it illegally, and
+`LGFLEN` gives me a difficulty dial. Provenance, the exact RTL semantics, and
+why I turned down the other two are in [docs/DUT.md](docs/DUT.md). The arbiter
+is being kept for Stage 7, where the question is whether any gain survives a
+change of design.
+
+### Measuring the headroom first
+
+Before writing a coverage model it seemed worth knowing whether random stimulus
+struggles at all. If one random test reaches every interesting state then there
+is no gap for a smarter selector to close, and the honest answer would be "no
+difference". So I measured it rather than assuming.
+
+```bash
+.venv/bin/python scripts/02_headroom_probe.py --depths 4 5 6 7 8 --seeds 5 --cycles 500
+```
+
+50 simulations, 500 cycles each, two stimulus biases, five seeds, 0 scoreboard
+mismatches against a Python reference FIFO. Raw data is in
+`results/stage2/probe_summary.json`. The whole sweep takes 38 seconds and comes
+back byte-identical on a rerun, so it's cheap to redo rather than take my word
+for it.
+
+| Depth | Stimulus | Seeds reaching full | Mean max fill | % cycles full |
+|---|---|---|---|---|
+| 16 | unbiased, p=0.5/0.5 | 3/5 | 15.2 | 2.64% |
+| 16 | write-heavy, 0.7/0.3 | 5/5 | 16.0 | 51.88% |
+| 32 | unbiased | 2/5 | 22.4 | 0.48% |
+| 32 | write-heavy | 5/5 | 32.0 | 47.32% |
+| 64 | unbiased | 0/5 | 23.2 | 0.00% |
+| 64 | write-heavy | 5/5 | 64.0 | 38.32% |
+| 128 | unbiased | 0/5 | 23.2 | 0.00% |
+| 128 | write-heavy | 5/5 | 128.0 | 19.88% |
+| 256 | unbiased | 0/5 | 23.2 | 0.00% |
+| 256 | write-heavy | 0/5 | 199.2 | 0.00% |
+
+Occupancy distribution, pooled over seeds:
+
+| Depth | Stimulus | median fill | p90 | p99 | max seen |
+|---|---|---|---|---|---|
+| 32 | unbiased | 8 | 25 | 31 | 32 |
+| 32 | write-heavy | 31 | 32 | 32 | 32 |
+| 64 | unbiased | 8 | 26 | 34 | 36 |
+| 64 | write-heavy | 63 | 64 | 64 | 64 |
+
+### What that actually means
+
+Unbiased stimulus is a plus-or-minus-one random walk on the fill level. It sits
+around a median of 8 and never gets past 36 regardless of how deep the FIFO is.
+Depths 64, 128 and 256 all give the same 23.2 mean max fill, because past about
+36 the extra depth isn't reachable, so it stops mattering.
+
+So whether the FIFO ever fills is decided by the stimulus, not by the FIFO. At
+depth 64 the interesting states are unreachable under unbiased stimulus and
+trivial under write-heavy stimulus. That's the structure I need. It also means
+the difficulty isn't in the RTL parameters, it's in the space of stimulus
+sequences the generator can produce.
+
+Two things I'm carrying into the next stages:
+
+- Stage 3 should bin the occupancy so that there are real bins above fill 36,
+  where unbiased stimulus doesn't go.
+- Stage 4 has to sample the stimulus parameter space, not just flip p=0.5
+  coins. A baseline that only ever produces unbiased traffic would be easy to
+  beat, and the improvement would be an artefact of a weak baseline rather than
+  a real result.
 
 ## Plan for the rest
 
-2. Pick the real design under test. I'm looking at a synchronous FIFO, a
-   round-robin arbiter, or a small bus bridge. The thing I'm most worried about
-   is coverage headroom. If constrained-random closes the coverage model
-   immediately then there's no gap for novelty to close and the experiment has
-   nothing to measure.
 3. Write the functional coverage model. Plain English in this README first,
    then implement it. Each test needs to emit a coverage vector I can store.
 4. Constrained-random baseline. Coverage against number of tests, averaged over
@@ -135,12 +248,11 @@ the design simulator-neutral.
 6. Compare. Same design, same coverage model, same target, same seeds. Report
    the reduction with its variance across seeds, not as a single number.
 7. Honesty pass. Check whether the novelty score is getting any information
-   from coverage results, directly or indirectly. If it is, then what I've
-   built is coverage-*directed* selection, which is a real technique but a
-   different and easier claim, and this README has to say which one it was.
-   Also check whether any gain survives a different coverage target and a
-   different design. If novelty doesn't beat random, that goes in here as the
-   result.
+   from coverage results, directly or indirectly. If it is, then what I built is
+   coverage-*directed* selection, which is a real technique but a different and
+   easier claim, and this README has to say which one it was. Also check whether
+   any gain survives a different coverage target and a different design. If
+   novelty doesn't beat random, that goes here as the result.
 
 ## Layout
 
@@ -150,5 +262,15 @@ tb/        cocotb testbenches
 simlib/    shared code (coverage model, later the selectors)
 scripts/   numbered entry points
 results/   measured output
-docs/      versions, notes
+docs/      versions, DUT provenance, notes
 ```
+
+## License and third-party code
+
+My code is MIT, see [LICENSE](LICENSE).
+
+`rtl/sfifo.v` isn't mine. It's from [ZipCPU/wb2axip](https://github.com/ZipCPU/wb2axip),
+written by Dan Gisselquist, released to the public domain, and vendored here
+unmodified. The upstream commit and a checksum are recorded in
+[docs/DUT.md](docs/DUT.md). `rtl/counter.v` is mine, written as a throwaway for
+Stage 1.

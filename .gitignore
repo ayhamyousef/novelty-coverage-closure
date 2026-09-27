@@ -10,3 +10,7 @@ __pycache__/
 # (verified: byte-identical across reruns and across both simulators) and are
 # committed as the actual raw data.
 results/**/results_*.xml
+
+# Per-run probe intermediates. probe_summary.json holds every record verbatim,
+# so these are regenerable duplicates rather than data.
+results/stage2/probe_lg*.json
