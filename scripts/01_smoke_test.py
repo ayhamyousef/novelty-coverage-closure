@@ -51,8 +51,6 @@ def main() -> int:
         # --coverage -> line + toggle into coverage.dat
         # -Wno-fatal keeps lint warnings from killing the build
         build_args = ["--coverage", "-Wno-fatal"]
-        if args.waves:
-            build_args.append("--trace")
 
     print(f"[stage1] building with {args.sim} ...", flush=True)
     runner.build(
@@ -72,7 +70,7 @@ def main() -> int:
         "TB_OUT_DIR": str(out_dir),
     }
 
-    # Verilator 5.020 has no runtime arg to choose where coverage goes -- checked
+    # Verilator 5.020 has no runtime arg to choose where coverage goes. Checked
     # verilated.cpp, it only parses +verilator+{debug,error+limit,prof+*,
     # rand+reset,seed,version}. So VerilatedCov::write() always drops
     # coverage.dat into the sim's cwd, which is test_dir. Clear stale copies
@@ -132,6 +130,21 @@ def main() -> int:
                 print(f"[stage1] annotated source: {annot} ({len(written)} file(s))")
             except (subprocess.CalledProcessError, FileNotFoundError) as exc:
                 print(f"[stage1] verilator_coverage --annotate failed: {exc}")
+
+    # ---- the waveform, if one was dumped ---------------------------------
+    # cocotb's Verilator main writes dump.vcd into the simulation's working
+    # directory, which is test_dir and not the build directory. Move it in with
+    # the rest of the results so it is findable.
+    if args.waves:
+        produced = REPO / "tb" / "dump.vcd"
+        if produced.exists():
+            dest = out_dir / f"waves_seed{args.seed}.vcd"
+            shutil.move(str(produced), str(dest))
+            rel = dest.relative_to(REPO)
+            print(f"[stage1] waveform: {rel} ({dest.stat().st_size} bytes), "
+                  f"open with: gtkwave {rel}")
+        else:
+            print("[stage1] NOTE: --waves was asked for but no dump.vcd appeared.")
 
     # ---- what landed on disk ---------------------------------------------
     print("\n[stage1] artifacts on disk:")
