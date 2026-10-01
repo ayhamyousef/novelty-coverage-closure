@@ -87,17 +87,24 @@ class FifoEnv:
         o_full = int(d.o_full.value)
         o_empty = int(d.o_empty.value)
         fill = int(d.o_fill.value)
-        o_data = int(d.o_data.value)
 
         # 3. check the reference model against the DUT *before* the edge
         if fill != len(self.ref):
             self.errors += 1
             d._log.error("cycle %d: o_fill=%d but reference holds %d",
                          self.cycle, fill, len(self.ref))
-        if not o_empty and self.ref and o_data != self.ref[0]:
-            self.errors += 1
-            d._log.error("cycle %d: o_data=%d but reference head is %d",
-                         self.cycle, o_data, self.ref[0])
+        # o_data only means anything when the FIFO is non-empty. Icarus leaves
+        # the memory at X until first written and Verilator zeroes it, so
+        # resolving it unconditionally throws on Icarus only.
+        if not o_empty and self.ref:
+            dv = d.o_data.value
+            if not dv.is_resolvable:
+                self.errors += 1
+                d._log.error("cycle %d: o_data is X or Z while non-empty", self.cycle)
+            elif int(dv) != self.ref[0]:
+                self.errors += 1
+                d._log.error("cycle %d: o_data=%d but reference head is %d",
+                             self.cycle, int(dv), self.ref[0])
 
         # 4. statistics on the state the DUT is sitting in this cycle
         self.fill_hist[fill] += 1

@@ -30,10 +30,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-try:  # cocotb >= 2.0
-    from cocotb_tools.runner import get_runner
-except ImportError:  # cocotb 1.x
-    from cocotb.runner import get_runner
+from simlib.simrunner import build_dut, run_test  # noqa: E402
 
 # (label, p_wr, p_rd). Unbiased is the case I care about, since that is what a
 # constrained-random generator produces if nobody biases it.
@@ -56,34 +53,31 @@ def main() -> int:
 
     out_dir = REPO / "results" / "stage2"
     out_dir.mkdir(parents=True, exist_ok=True)
-    runner = get_runner(args.sim)
-
     records = []
     for lgflen in args.depths:
         build_dir = REPO / "sim_build" / f"stage2_{args.sim}_lg{lgflen}"
         print(f"\n[stage2] building sfifo with LGFLEN={lgflen} (depth {1 << lgflen}) ...",
               flush=True)
-        runner.build(
+        runner = build_dut(
+            args.sim,
             sources=[REPO / "rtl" / "sfifo.v"],
-            hdl_toplevel="sfifo",
+            toplevel="sfifo",
             build_dir=build_dir,
-            build_args=["-Wno-fatal"] if args.sim == "verilator" else [],
             parameters={"LGFLEN": lgflen},
-            always=True,
         )
 
         for label, p_wr, p_rd in BIASES:
             for seed in range(1, args.seeds + 1):
                 tag = f"lg{lgflen}_{label}_seed{seed}"
                 out_json = out_dir / f"probe_{tag}.json"
-                runner.test(
-                    hdl_toplevel="sfifo",
+                run_test(
+                    runner,
+                    toplevel="sfifo",
                     test_module="test_sfifo_probe",
                     test_dir=REPO / "tb",
                     build_dir=build_dir,
-                    results_xml=str(build_dir / f"results_{tag}.xml"),
-                    timescale=("1ns", "1ps"),
-                    extra_env={
+                    results_xml=build_dir / f"results_{tag}.xml",
+                    env={
                         "PYTHONPATH": os.pathsep.join([str(REPO), str(REPO / "tb")]),
                         "TB_SEED": str(seed),
                         "TB_CYCLES": str(args.cycles),
@@ -98,8 +92,16 @@ def main() -> int:
                 rec["bias"] = label
                 records.append(rec)
 
+    # Record what produced this file. Rerunning with different arguments
+    # overwrites it, and without this there is no way to tell from the file
+    # which run you are looking at.
+    payload = {
+        "config": {"sim": args.sim, "depths": args.depths, "seeds": args.seeds,
+                   "cycles": args.cycles, "biases": [b[0] for b in BIASES]},
+        "records": records,
+    }
     with open(out_dir / "probe_summary.json", "w") as fh:
-        json.dump(records, fh, indent=2)
+        json.dump(payload, fh, indent=2)
 
     # ---- aggregate -------------------------------------------------------
     print(f"\n{'depth':>6} {'bias':>12} {'reached full':>13} {'max fill':>16} "

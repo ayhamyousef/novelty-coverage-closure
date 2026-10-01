@@ -19,16 +19,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# No `timescale in the RTL, so the same file compiles under both simulators.
-# Verilator doesn't need one. Icarus defaults to 1s precision and then can't
-# represent a 10ns clock, so pass it in from here.
-TIMESCALE = ("1ns", "1ps")
 sys.path.insert(0, str(REPO))
 
-try:  # cocotb >= 2.0
-    from cocotb_tools.runner import get_runner
-except ImportError:  # cocotb 1.x
-    from cocotb.runner import get_runner
+# The timescale lives in simlib.simrunner, not here. There's no `timescale in
+# the RTL so the same file compiles under both simulators, and Icarus needs one
+# passed in or it can't represent a 10ns clock.
+from simlib.simrunner import build_dut, run_test  # noqa: E402
 
 
 def main() -> int:
@@ -44,23 +40,17 @@ def main() -> int:
     build_dir = REPO / "sim_build" / f"stage1_{args.sim}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    runner = get_runner(args.sim)
-
-    build_args = []
-    if args.sim == "verilator":
-        # --coverage -> line + toggle into coverage.dat
-        # -Wno-fatal keeps lint warnings from killing the build
-        build_args = ["--coverage", "-Wno-fatal"]
+    # --coverage gets line and toggle coverage into coverage.dat
+    build_args = ["--coverage"] if args.sim == "verilator" else []
 
     print(f"[stage1] building with {args.sim} ...", flush=True)
-    runner.build(
+    runner = build_dut(
+        args.sim,
         sources=[REPO / "rtl" / "counter.v"],
-        hdl_toplevel="counter",
+        toplevel="counter",
         build_dir=build_dir,
-        build_args=build_args,
-        always=True,
+        extra_build_args=build_args,
         waves=args.waves,
-        timescale=TIMESCALE,
     )
 
     env = {
@@ -85,16 +75,16 @@ def main() -> int:
     plusargs = []
 
     print(f"[stage1] running test (seed={args.seed}, cycles={args.cycles}) ...", flush=True)
-    results_xml = runner.test(
-        hdl_toplevel="counter",
+    results_xml = run_test(
+        runner,
+        toplevel="counter",
         test_module="test_counter",
         test_dir=REPO / "tb",
         build_dir=build_dir,
-        results_xml=str(out_dir / f"results_seed{args.seed}.xml"),
+        results_xml=out_dir / f"results_seed{args.seed}.xml",
         plusargs=plusargs,
-        extra_env=env,
+        env=env,
         waves=args.waves,
-        timescale=TIMESCALE,
     )
     print(f"[stage1] cocotb results XML: {results_xml}")
 
