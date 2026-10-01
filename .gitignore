@@ -14,3 +14,6 @@ results/**/results_*.xml
 # Per-run probe intermediates. probe_summary.json holds every record verbatim,
 # so these are regenerable duplicates rather than data.
 results/stage2/probe_lg*.json
+
+# Per-test coverage records. model_check.json holds every record verbatim.
+results/stage3/cov_*.json

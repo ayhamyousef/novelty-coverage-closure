@@ -9,7 +9,7 @@ The testbench is Python, using cocotb, and everything runs locally on free
 tools. Every number below comes out of a script in `scripts/`, and where
 something hasn't been measured I've tried to say so.
 
-**Status: Stage 2 of 7.** No claim about novelty selection yet. That starts at
+**Status: Stage 4 of 7 next.** No claim about novelty selection yet. That starts at
 Stage 5.
 
 ## What's working so far
@@ -23,6 +23,10 @@ Stage 5.
   writing any coverage model: 50 simulations, 0 mismatches, showing that
   unbiased random stimulus never pushes the FIFO past about 36 entries no
   matter how deep the FIFO actually is (Stage 2).
+- A 156-bin functional coverage model, every bin confirmed reachable, and a
+  test length picked by measurement rather than guess. My first attempt at the
+  model was too easy and random closed it in 23 tests, which the check caught
+  before Stage 4 was built on top of it (Stage 3).
 
 ## What this project isn't
 
@@ -234,10 +238,142 @@ Two things I'm carrying into the next stages:
   beat, and the improvement would be an artefact of a weak baseline rather than
   a real result.
 
+## Stage 3: the coverage model
+
+A functional coverage model is a list, written by hand, of situations the
+design ought to be put in. The testbench watches for them and ticks them off.
+Stages 4 to 6 are all about closing this list, so I wrote it in plain English
+first, and it's frozen before any selector runs.
+
+### Depth 32
+
+`LGFLEN=5`. That came from the Stage 2 numbers rather than preference. Depth 16
+is too easy, unbiased random reached full in 3 of 5 seeds. Depth 64 is too
+hard, 0 of 5, and the model might never close. Depth 32 got 2 of 5, with a 99th
+percentile occupancy of 31.
+
+### What I'm trying not to do
+
+Every bin has to be justifiable from how the FIFO behaves, not from what random
+happens to miss. Picking bins because random can't reach them would be
+inventing the gap I then take credit for closing. So the model came first and I
+checked reachability afterwards, as a sanity test.
+
+One detail shapes a lot of it. Writes to a full FIFO and reads from an empty
+one are silently dropped by this design, so asserting `i_wr` while full and
+having a write accepted are different events. The operation bins count what the
+testbench attempted, since that's what exercises the gating. The burst bins
+count what was accepted, since a run of writes only means something if data
+moved.
+
+### The bins
+
+- **132 bins, operation crossed with fill level.** The four things the
+  testbench can do in a cycle (nothing, write, read, both) crossed with all 33
+  fill levels. This is the ordinary SystemVerilog idiom of binning a counter per
+  value and crossing it with the operation, and it's where nearly all the
+  difficulty is. Being at exactly fill 29 while attempting a simultaneous read
+  and write is a specific thing to arrange.
+- **8 transition bins.** Each boundary crossed in both directions, plus sitting
+  at full and at empty for more than one cycle. A FIFO that fills correctly can
+  still drain wrongly.
+- **4 wraparound bins.** The read and write addresses running off the end of
+  memory, on their own and combined with a boundary.
+- **5 reset bins.** Reset while empty, partly full and completely full, and
+  reset arriving while an operation is pending.
+- **7 burst bins.** Sustained one-sided traffic at a quarter and half the
+  depth, bursts that end at full or empty, and simultaneous traffic held for
+  four cycles.
+
+156 bins total. Each test writes out a 156-element binary vector, and that's
+what the Stage 5 selectors consume.
+
+### My first model was too easy
+
+The first version had 52 bins, with occupancy in bands rather than per level.
+Random sampling of the stimulus parameter space hit 40 of the 52 on the first
+test and closed all 52 by test 23. That would have wasted Stage 4, since you
+can't measure a 27% to 49% saving against a target that random reaches in 23
+tests. Going to a per-fill-level cross is standard granularity for a FIFO this
+size, and it gave the model somewhere to hide.
+
+Test length mattered as much as the bin count:
+
+| Cycles per test | Random closes at | |
+|---|---|---|
+| 60 | never, 152/156 after 120 tests | 4 bins out of reach at that length |
+| 120 | test 60 | 144 bins by test 15, then a long tail |
+| 250 | test 37 | mostly done by test 16 |
+
+120 is the shortest length where everything still closes, so a test is 120
+cycles from here on.
+
+### Checking it
+
+```bash
+.venv/bin/python scripts/03_coverage_model.py --seeds 5 --feasibility 80
+.venv/bin/python scripts/03_coverage_model.py --list        # print the bins
+.venv/bin/python scripts/03_coverage_model.py --crosscheck  # both simulators
+```
+
+115 simulations, 0 scoreboard mismatches, about 15 seconds. Raw data in
+`results/stage3/model_check.json`.
+
+| Coverpoint | Bins | Unbiased Bernoulli | Any stimulus |
+|---|---|---|---|
+| op_x_fill | 132 | 115 | 132 |
+| transition | 8 | 3 | 8 |
+| wrap | 4 | 3 | 4 |
+| reset | 5 | 0 | 5 |
+| burst | 7 | 2 | 7 |
+| **total** | **156** | **123** | **156** |
+
+Every bin is reachable by something, so nothing is permanently stuck. That was
+the main thing I wanted out of this.
+
+**The 123 is not the baseline.** Unbiased Bernoulli means `p_reset=0` and no
+bursts, so it can't reach the reset bins at all. Quoting it as what random
+achieves would be inflating my own result. The honest preview is random over the
+whole parameter space, at the real 120-cycle test length:
+
+| After N tests | 1 | 5 | 10 | 15 | 23 | 37 | 60 |
+|---|---|---|---|---|---|---|---|
+| Bins covered | 75 | 114 | 128 | 144 | 153 | 155 | 156 |
+
+A fast climb to 144 in 15 tests, then 12 bins that take another 45. The tail is
+where selection could matter. It's also thin enough that any difference might
+sit inside the seed noise, and I'd rather write that down now than find it out
+in Stage 6.
+
+Both simulators produce identical vectors for the same spec and seed, down to
+the per-bin hit counts. Stages 4 to 6 pool vectors from separate simulator
+processes, so that one is worth checking rather than assuming.
+
+### Things that broke
+
+**Neither the Stage 2 nor the Stage 3 script worked under Icarus.** cocotb
+wants the timescale on `build()` and on `test()`, and I'd only passed it to
+`test()`. Verilator doesn't care, Icarus dies with a precision error. Same bug
+as Stage 1, reintroduced by copying the `test()` call and not the other one.
+Both scripts offered `--sim icarus` and neither had ever been run. There's now
+a single helper in `simlib/simrunner.py` that starts every simulation, so
+there's no second place left to forget it.
+
+**Reading `o_data` threw on Icarus only.** The FIFO's memory starts at X there
+and at zero under Verilator, so resolving the data output before the first
+write raised on one simulator and quietly returned 0 on the other. It's now
+only resolved when the FIFO reports non-empty, and an X at that point counts as
+a scoreboard failure instead of crashing the run.
+
+**Rerunning a script with different arguments overwrote committed results.**
+Testing the Icarus fix clobbered the 50-simulation Stage 2 data that the tables
+above quote, and nothing in the file said which run had produced it. Restored
+from git, and both summary files now record the arguments that made them.
+
 ## Plan for the rest
 
-3. Write the functional coverage model. Plain English in this README first,
-   then implement it. Each test needs to emit a coverage vector I can store.
+3. ~~Write the functional coverage model.~~ **Done. 156 bins, all reachable,
+   120-cycle tests. Each test emits a storable coverage vector.**
 4. Constrained-random baseline. Coverage against number of tests, averaged over
    at least 5 seeds, up to a target fixed in advance. Everything gets measured
    against this, so the baseline needs to be strong rather than convenient.
