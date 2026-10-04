@@ -30,7 +30,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from simlib.fifo_coverage import build_fifo_coverage_model  # noqa: E402
-from simlib.stimulus import StimulusSpec  # noqa: E402
+from simlib.stimulus import StimulusSpec, random_spec  # noqa: E402
 
 from simlib.simrunner import build_dut, run_test  # noqa: E402
 
@@ -61,31 +61,6 @@ VARIED = {
                                     wr_burst=DEPTH + 8, rd_burst=DEPTH + 8,
                                     p_reset=0.002),
 }
-
-
-def sample_spec(rng, cycles: int) -> StimulusSpec:
-    """Draw one stimulus spec from the parameter space.
-
-    This is a preview of what Stage 4's random baseline will do, not the
-    baseline itself. The point of running it here is narrow: if sampling the
-    parameter space closes the whole model in a handful of tests then there is
-    no room for a selector to win anything, and the model needs rethinking
-    before Stage 4 rather than after.
-
-    Note what has to be in the space. Stage 2 showed burst knobs are needed to
-    reach the top of the FIFO, and the reset bins can only be reached if
-    p_reset can be non-zero. A baseline that left either out would be crippled,
-    and beating it would prove nothing.
-    """
-    return StimulusSpec(
-        cycles=cycles,
-        p_wr=rng.uniform(0.05, 0.95),
-        p_rd=rng.uniform(0.05, 0.95),
-        p_burst=rng.choice([0.0, 0.02, 0.05, 0.10]),
-        wr_burst=rng.choice([0, 4, 8, 16, DEPTH, DEPTH + 8]),
-        rd_burst=rng.choice([0, 4, 8, 16, DEPTH, DEPTH + 8]),
-        p_reset=rng.choice([0.0, 0.0, 0.001, 0.005, 0.02]),
-    )
 
 
 def union(vectors):
@@ -258,7 +233,9 @@ def main() -> int:
     rng = random.Random(12345)
     cumulative, curve, feas_recs = [0] * model.n_bins, [], []
     for k in range(args.feasibility):
-        spec = sample_spec(rng, args.cycles)
+        # Same generator Stage 4's baseline uses. Keeping one copy means the
+        # reachability check here and the baseline there can't drift apart.
+        spec = random_spec(rng, cycles=args.cycles)
         r = run(f"sampled{k}", spec, seed=1000 + k)
         feas_recs.append(r)
         for j, b in enumerate(r["vector"]):

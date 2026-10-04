@@ -83,3 +83,33 @@ def generate(spec: StimulusSpec, seed: int) -> Iterator[Dict]:
 
         yield {"wr": do_wr, "rd": do_rd, "reset": False,
                "data": rng.randrange(mask + 1)}
+
+
+# Knob ranges for the constrained-random generator. These are set from how the
+# FIFO behaves, not from what random turns out to miss, which is the same rule
+# the coverage model follows. Burst lengths run past the depth because a FIFO
+# of 32 needs a run longer than 32 to sit at full, and p_reset tops out low
+# because reset is a rare event in real traffic rather than a per-cycle coin
+# flip.
+#
+# Fixed in Stage 3 before any baseline was measured, and not touched since.
+# Retuning these after seeing a coverage curve would be coverage-directed
+# generation, which is a different and easier claim than the one being made.
+P_RATE_RANGE = (0.05, 0.95)
+P_BURST_CHOICES = (0.0, 0.02, 0.05, 0.10)
+BURST_LEN_CHOICES = (0, 4, 8, 16, 32, 40)
+P_RESET_CHOICES = (0.0, 0.0, 0.001, 0.005, 0.02)
+TEST_CYCLES = 120
+
+
+def random_spec(rng: random.Random, cycles: int = TEST_CYCLES) -> StimulusSpec:
+    """Draw one stimulus spec from the constrained-random parameter space."""
+    return StimulusSpec(
+        cycles=cycles,
+        p_wr=rng.uniform(*P_RATE_RANGE),
+        p_rd=rng.uniform(*P_RATE_RANGE),
+        p_burst=rng.choice(P_BURST_CHOICES),
+        wr_burst=rng.choice(BURST_LEN_CHOICES),
+        rd_burst=rng.choice(BURST_LEN_CHOICES),
+        p_reset=rng.choice(P_RESET_CHOICES),
+    )
