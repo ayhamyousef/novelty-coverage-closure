@@ -9,7 +9,7 @@ The testbench is Python, using cocotb, and everything runs locally on free
 tools. Every number below comes out of a script in `scripts/`, and where
 something hasn't been measured I've tried to say so.
 
-**Status: Stage 4 of 7 next.** No claim about novelty selection yet. That starts at
+**Status: Stage 5 of 7 next.** No claim about novelty selection yet. That starts at
 Stage 5.
 
 ## What's working so far
@@ -27,6 +27,9 @@ Stage 5.
   test length picked by measurement rather than guess. My first attempt at the
   model was too easy and random closed it in 23 tests, which the check caught
   before Stage 4 was built on top of it (Stage 3).
+- The random baseline the rest of the project is measured against: 39.9
+  simulations to reach 99% coverage, standard deviation 13.1, over 50 runs
+  spanning 5 candidate pools (Stage 4).
 
 ## What this project isn't
 
@@ -370,13 +373,137 @@ Testing the Icarus fix clobbered the 50-simulation Stage 2 data that the tables
 above quote, and nothing in the file said which run had produced it. Restored
 from git, and both summary files now record the arguments that made them.
 
+## Stage 4: the random baseline
+
+This is the curve everything else is measured against, so the targets are
+written down here before the baseline was run, and before any selector exists.
+
+### Targets, fixed in advance
+
+| Target | Bins of 156 |
+|---|---|
+| 90% | 141 |
+| 95% | 149 |
+| 98% | 153 |
+| 99% | 155 |
+| 100% | 156 |
+
+**99% is the headline**, which is 155 of 156 bins. That sits inside the
+98.5% to 99.5% band the two papers report against, so it's their choice rather
+than one I picked after looking at my own curve. The others are reported too,
+because a saving that only shows up at one target isn't worth much and Stage 7
+has to check that.
+
+### How the experiment is set up
+
+The papers do test *selection*, not test generation. You have candidate stimuli
+and you decide which ones to spend simulation time on. Random selection picks at
+random, novelty selection picks what looks new. For Stage 6 to be a fair
+comparison, both have to be choosing from the same candidates.
+
+So: generate a pool of candidate specs, simulate each one once, and cache the
+coverage vector it produced. A test's coverage is fully determined by its spec
+and its seed, so after that any selection order can be replayed from the cache
+without simulating anything again. All the compute in this project lands here.
+
+Two sources of variance, so both get sampled: 5 independent pools of 400
+candidates each, from different generator seeds, and 10 random orderings within
+each pool. 50 curves in total. Quoting variance over orderings alone would
+understate it, since it would hold the candidate set fixed.
+
+### What it costs
+
+```bash
+.venv/bin/python scripts/04_random_baseline.py
+.venv/bin/python scripts/check_invariants.py   # no simulator needed
+```
+
+2000 simulations at about 350 ms each, so roughly 11 minutes the first time.
+Every result is cached by spec and seed, so a rerun is instant and Stages 5 and
+6 pay nothing. All 5 pools can reach all 156 bins, which matters: a pool that
+couldn't would make the 100% target unreachable and the numbers meaningless.
+The script prints that check.
+
+### The baseline
+
+50 runs over 2000 simulations, raw data in `results/stage4/baseline.json`.
+Every simulation is checked against the reference FIFO and the pool builder
+raises on the first mismatch, so a pool that finishes building had none.
+
+| Target | Bins | Mean tests | Median | Std dev | Min | Max |
+|---|---|---|---|---|---|---|
+| 90% | 141 | 14.2 | 13.5 | 4.4 | 8 | 23 |
+| 95% | 149 | 20.2 | 20.0 | 5.8 | 10 | 37 |
+| 98% | 153 | 29.6 | 28.0 | 9.1 | 13 | 59 |
+| **99%** | **155** | **39.9** | **38.0** | **13.1** | **17** | **91** |
+| 100% | 156 | 53.5 | 48.5 | 23.4 | 22 | 148 |
+
+![coverage curve](results/stage4/coverage_curve.png)
+
+So the number to beat is **39.9 simulations to reach 99% coverage**, and every
+run reached every target.
+
+### The variance is the interesting part
+
+The standard deviation is about a third of the mean at every target, and 44% of
+it at 100%. The distribution is skewed right: at the 99% target the median run
+takes 38 tests and the worst takes 91. Random selection is not just slow, it's
+erratic, and a single run tells you very little.
+
+Splitting the variance at the 99% target shows where it comes from:
+
+| Source | Spread |
+|---|---|
+| Between pools, standard deviation of the 5 pool means | 6.8 |
+| Within a pool, mean standard deviation over orderings | 12.1 |
+
+Ordering matters more than which candidates you happened to generate, but the
+pool is not negligible either. The five pool means run from 31.3 to 49.0, a
+factor of 1.6. If I'd used one pool and 50 orderings, the baseline I quote could
+have been 31 or 49 depending on which pool I drew, and I'd have had no way to
+know. That's the argument for sampling both.
+
+### Can Stage 6 actually measure anything
+
+Worth working out now rather than after building a selector.
+
+The papers report savings of 27% to 49%. Against a mean of 39.9, a 27% saving
+is about 11 fewer tests. The standard deviation is 13.1, so that improvement is
+smaller than the run-to-run noise. Any single pair of runs could easily show
+novelty losing.
+
+What saves it is the number of runs. With 50 runs the standard error of the
+mean is 1.85, so an 11-test shift is roughly 6 standard errors apart and
+perfectly measurable *in the mean*. Two consequences for Stage 6:
+
+- The comparison has to be **paired**: run both selectors on the same pool with
+  the same ordering seed, and look at the per-pair difference. That removes the
+  between-pool variance entirely instead of averaging over it.
+- The result has to be reported as a difference in means with an interval, not
+  as "novelty wins". With distributions this wide, "novelty wins on average by
+  X with interval Y" is true and "novelty is better" is not.
+
+### Checking the parts that fail quietly
+
+`scripts/check_invariants.py` runs 18 checks with no simulator involved. They
+cover the things that would make the Stage 6 comparison wrong without anything
+visibly breaking: that a `Candidate` carries no coverage field and an
+adversarial selector poking at its arguments finds none, that a selection
+episode never picks the same candidate twice and ends at the pool's union
+coverage, that a larger pool extends a smaller one rather than reshuffling it
+so cached results stay valid, and that candidate seeds don't collide across
+pools.
+
+I also re-simulated six cached candidates from scratch and compared them
+against the cache. Identical vectors, which is the thing the replay trick
+depends on.
+
 ## Plan for the rest
 
 3. ~~Write the functional coverage model.~~ **Done. 156 bins, all reachable,
    120-cycle tests. Each test emits a storable coverage vector.**
-4. Constrained-random baseline. Coverage against number of tests, averaged over
-   at least 5 seeds, up to a target fixed in advance. Everything gets measured
-   against this, so the baseline needs to be strong rather than convenient.
+4. ~~Constrained-random baseline.~~ **Done. 39.9 simulations to 99% coverage,
+   standard deviation 13.1, over 50 runs.**
 5. The novelty selector. Start with distance in a hand-built feature space,
    then try a GRU autoencoder scoring novelty by reconstruction error or by
    distance to k-means centroids in the latent space. The simple version stays

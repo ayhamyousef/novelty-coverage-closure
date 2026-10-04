@@ -11,6 +11,7 @@ All free, all local.
 | Python | 3.12.3 | system (Ubuntu 24.04) |
 | cocotb | 1.9.2 | pip, in `.venv` |
 | numpy | 2.5.3 | pip, in `.venv` |
+| matplotlib | 3.11.2 | pip, in `.venv` |
 | find-libpython | 0.5.1 | pip dependency of cocotb |
 | GCC | 13.3.0 | apt (`build-essential`) |
 | GNU Make | 4.3 | apt |
@@ -22,7 +23,8 @@ Skipped these for now so Stage 1 wasn't waiting on a ~900 MB download:
 
 - `torch` (Stage 5, the GRU autoencoder)
 - `scikit-learn` (Stage 5, k-means over the latent space)
-- `matplotlib` (Stage 4, the coverage curve)
+
+`matplotlib` went in at Stage 4 for the coverage curve.
 
 ## cocotb 1.9.2, not 2.x
 
