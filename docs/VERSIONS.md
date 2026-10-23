@@ -12,6 +12,8 @@ All free, all local.
 | cocotb | 1.9.2 | pip, in `.venv` |
 | numpy | 2.5.3 | pip, in `.venv` |
 | matplotlib | 3.11.2 | pip, in `.venv` |
+| torch | 2.14.0+cu130 | pip, in `.venv` |
+| scikit-learn | 1.9.1 | pip, in `.venv` |
 | find-libpython | 0.5.1 | pip dependency of cocotb |
 | GCC | 13.3.0 | apt (`build-essential`) |
 | GNU Make | 4.3 | apt |
@@ -21,10 +23,13 @@ All free, all local.
 
 Skipped these for now so Stage 1 wasn't waiting on a ~900 MB download:
 
-- `torch` (Stage 5, the GRU autoencoder)
-- `scikit-learn` (Stage 5, k-means over the latent space)
+Nothing is held back now. `matplotlib` went in at Stage 4 for the coverage
+curve, and `torch` and `scikit-learn` at Stage 5 for the autoencoder and the
+k-means over its latent space.
 
-`matplotlib` went in at Stage 4 for the coverage curve.
+The torch build that resolved has CUDA, but the selectors pin to CPU. The model
+is a 24-unit GRU over 120 timesteps and the fitting is tiny, so CPU is fast
+enough and keeps runs reproducible.
 
 ## cocotb 1.9.2, not 2.x
 

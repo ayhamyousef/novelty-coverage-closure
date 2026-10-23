@@ -9,7 +9,7 @@ The testbench is Python, using cocotb, and everything runs locally on free
 tools. Every number below comes out of a script in `scripts/`, and where
 something hasn't been measured I've tried to say so.
 
-**Status: Stage 5 of 7 next.** No claim about novelty selection yet. That starts at
+**Status: Stage 6 of 7 next.** No claim about novelty selection yet. That starts at
 Stage 5.
 
 ## What's working so far
@@ -30,6 +30,9 @@ Stage 5.
 - The random baseline the rest of the project is measured against: 39.9
   simulations to reach 99% coverage, standard deviation 13.1, over 50 runs
   spanning 5 candidate pools (Stage 4).
+- Four novelty selectors, two of them neural, none of which beat random. The
+  headline so far is a negative result with the effect size the papers report
+  excluded at 95% confidence (Stage 5).
 
 ## What this project isn't
 
@@ -498,16 +501,124 @@ I also re-simulated six cached candidates from scratch and compared them
 against the cache. Identical vectors, which is the thing the replay trick
 depends on.
 
+## Stage 5: the novelty selectors
+
+Four of them, built in increasing order of machinery, all scoring a candidate
+on its stimulus alone:
+
+| Selector | Novelty is |
+|---|---|
+| `feature-distance` | distance to the closest stimulus already simulated, in a hand-built 7-number feature space |
+| `feature-knn` | mean distance to the 5 closest, which is the usual novelty-search formulation |
+| `gru-reconstruction` | how badly a GRU sequence autoencoder reconstructs the candidate |
+| `gru-kmeans` | distance to the nearest k-means centroid in that autoencoder's latent space |
+
+The autoencoder reads the actual driven waveform, 120 cycles by 3 channels of
+write, read and reset, and only ever trains on stimuli that have been
+simulated. Every arm, random included, runs the same batching protocol: the
+first 10 picks are random because there's nothing to be novel against yet, then
+the selector refits and queues the top 5 by score, repeatedly. All arms share
+an identical opening batch for a given seed, so anything after that is down to
+selection rather than a luckier start.
+
+### None of them beat random
+
+25 episodes per arm, paired on pool and ordering seed, over the 5 pools from
+Stage 4. Mean simulations to reach each target:
+
+| Target | random | feature-distance | feature-knn | gru-reconstruction | gru-kmeans |
+|---|---|---|---|---|---|
+| 90% | **13.6** | 16.3 | 16.0 | 16.3 | 14.8 |
+| 95% | **20.8** | 25.4 | 25.8 | 29.3 | 23.6 |
+| 98% | **30.6** | 35.0 | 36.6 | 50.3 | 34.3 |
+| 99% | **45.8** | 45.8 | 46.1 | 65.0 | 47.6 |
+| 100% | **56.8** | 60.0 | 58.4 | 89.0 | 65.4 |
+
+Random is best or tied at every single target. Paired against it at the 99%
+headline, where a negative difference would mean fewer simulations:
+
+| Arm | Mean difference | 95% CI | Episodes won |
+|---|---|---|---|
+| feature-distance | +0.1 | [-8.6, +8.7] | 11/25 |
+| feature-knn | +0.3 | [-7.1, +7.8] | 10/25 |
+| gru-kmeans | +1.8 | [-7.1, +10.7] | 12/25 |
+| gru-reconstruction | **+19.3** | [+9.7, +28.9] | 3/25 |
+
+So three of the four are statistically indistinguishable from random at 99%,
+and the GRU reconstruction-error version is reliably worse, winning only 3
+episodes out of 25.
+
+**The claim I can actually defend: a 27% saving is ruled out at 95% confidence
+for all four selectors.** The baseline is 45.8 simulations, so 27%, the smaller
+of the two figures the papers report, would be 12.4 fewer tests. That sits
+outside every confidence interval above. Whatever is happening here, it isn't
+the effect those papers describe.
+
+The neural versions didn't beat the hand-built one either. `gru-kmeans` is
+within noise of `feature-distance`, and `gru-reconstruction` is clearly worse,
+while costing about 1000 seconds of model fitting against under a second for
+the feature-space versions.
+
+### Why they lose
+
+Novel isn't the same as useful, and here that's measurable. Looking at the
+individual coverage of the tests each arm chooses, after the shared opening
+batch:
+
+| Arm | Bins covered per test picked |
+|---|---|
+| random | 47.8 |
+| gru-kmeans | 41.2 |
+| feature-distance | 41.0 |
+| gru-reconstruction | 39.1 |
+| feature-knn | 37.9 |
+
+The pool averages 46.8 bins per test. Random picks typical tests, so it lands
+near that average. Every novelty selector picks atypical ones, and in this pool
+atypical means weak. Scoring by distance from everything already seen is
+farthest-point sampling, which deliberately goes to the edges of the parameter
+space, and the edges here are things like a FIFO driven at very low write and
+read rates that barely moves.
+
+Lower coverage per test isn't automatically fatal, since what matters is new
+bins rather than total bins, and a diverse weak test could still be
+complementary. The numbers say that trade doesn't pay off here: the diversity
+gained doesn't make up for the coverage lost.
+
+I think the deeper reason is that my candidate pool has no structure for
+novelty to find. It's sampled uniformly from a 6-dimensional box, so it's
+already evenly spread, and the only way left to be novel is to be extreme. The
+papers select from real regression suites, where tests cluster around what
+engineers happened to write and whole regions sit unexplored. Novelty has
+something to find there. That's a difference in the setting rather than in the
+method, and Stage 7 is where it gets taken seriously.
+
+### What I added after seeing the first results, and why
+
+The first run, 5 episodes, had all three selectors losing badly, including
+`feature-distance` at +39.9%. Two things came out of that.
+
+`feature-knn` was added because scoring on the single nearest neighbour is
+known to chase outliers, and averaging over the 5 nearest is the standard
+novelty-search formulation and much less extreme-seeking. It's the fair version
+of the same idea rather than a different method, so both stay in the table. It
+made no difference.
+
+The other thing is a caution about my own numbers. Those 5 episodes suggested
+`feature-distance` was 39.9% worse. At 25 episodes it's +0.2%. Separately,
+while checking that batched random matches plain random, 30 seeds showed a 5.4
+test gap that looked almost significant and vanished at 300 seeds, where the
+two agree to 0.3 tests. Stage 4 warned that this design's noise is larger than
+the effect being hunted. These are two concrete cases of it biting.
+
 ## Plan for the rest
 
 3. ~~Write the functional coverage model.~~ **Done. 156 bins, all reachable,
    120-cycle tests. Each test emits a storable coverage vector.**
 4. ~~Constrained-random baseline.~~ **Done. 39.9 simulations to 99% coverage,
    standard deviation 13.1, over 50 runs.**
-5. The novelty selector. Start with distance in a hand-built feature space,
-   then try a GRU autoencoder scoring novelty by reconstruction error or by
-   distance to k-means centroids in the latent space. The simple version stays
-   in the comparison, and if the neural one doesn't beat it I want to know.
+5. ~~The novelty selector.~~ **Done, 4 of them. None beat random. A 27%
+   saving is ruled out at 95% confidence for all four.**
 6. Compare. Same design, same coverage model, same target, same seeds. Report
    the reduction with its variance across seeds, not as a single number.
 7. Honesty pass. Check whether the novelty score is getting any information
