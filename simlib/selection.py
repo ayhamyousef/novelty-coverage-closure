@@ -65,14 +65,21 @@ class RandomSelector(Selector):
 
 def run_selection(selector: Selector, candidates: Sequence[Candidate],
                   vectors: Dict[int, List[int]], n_tests: int,
-                  rng: random.Random) -> List[int]:
+                  rng: random.Random, stop_when_complete: bool = True) -> List[int]:
     """Run one selection episode. Returns the cumulative coverage curve.
 
     curve[i] is how many bins were covered after i+1 tests had been simulated.
     `vectors` never leaves this function.
+
+    Once every bin is covered the curve can't change again, so by default the
+    episode stops there and the rest is filled in with the final value. That is
+    exact rather than an approximation, and it matters: a selector that refits a
+    model every batch was spending most of an episode retraining on a curve that
+    had already flatlined.
     """
     n_bins = len(next(iter(vectors.values())))
     covered = [0] * n_bins
+    n_covered = 0
     remaining = list(range(len(candidates)))
     history: History = []
     curve: List[int] = []
@@ -83,10 +90,15 @@ def run_selection(selector: Selector, candidates: Sequence[Candidate],
         remaining.remove(pick)
         vec = vectors[pick]
         for j, b in enumerate(vec):
-            if b:
+            if b and not covered[j]:
                 covered[j] = 1
+                n_covered += 1
         history.append((pick, vec))
-        curve.append(sum(covered))
+        curve.append(n_covered)
+        if stop_when_complete and n_covered == n_bins:
+            break
+    if len(curve) < min(n_tests, len(candidates)):
+        curve += [curve[-1]] * (min(n_tests, len(candidates)) - len(curve))
     return curve
 
 

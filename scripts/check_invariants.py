@@ -22,6 +22,10 @@ from simlib.fifo_coverage import build_fifo_coverage_model  # noqa: E402
 from simlib.pool import Candidate, build_pool               # noqa: E402
 from simlib.selection import (RandomSelector, Selector,      # noqa: E402
                               run_selection, tests_to_target)
+from simlib.novelty import (FeatureDistanceSelector,          # noqa: E402
+                            FeatureKNNSelector,
+                            GRUKMeansSelector,
+                            GRUReconstructionSelector)
 from simlib.stimulus import StimulusSpec, generate, random_spec  # noqa: E402
 
 FAILURES = []
@@ -69,6 +73,48 @@ def main() -> int:
     run_selection(Peeker(), pool, vecs, 12, rng)
     check("adversarial selector finds no coverage on candidates", not peeked,
           f"found {peeked}" if peeked else "")
+
+    # The real test of the leakage boundary: run each novelty selector twice
+    # over the same pool, once with honest coverage in the history and once with
+    # the coverage replaced by nonsense. A selector that scores on stimulus
+    # alone must make identical picks. One that is secretly reading coverage
+    # cannot.
+    print("\nnovelty selectors ignore coverage")
+    npool = build_pool(gen_seed=77, size=40, cycles=120)
+    honest = {i: [1 if (i * 7 + j) % 11 == 0 else 0 for j in range(156)]
+              for i in range(40)}
+    # same shape, completely different content, including all-ones and all-zeros
+    poison = {i: [0] * 156 if i % 2 else [1] * 156 for i in range(40)}
+    for make in (lambda: FeatureDistanceSelector(batch_size=4, seed_batch=8),
+                 lambda: FeatureKNNSelector(batch_size=4, seed_batch=8),
+                 lambda: GRUReconstructionSelector(batch_size=4, seed_batch=8,
+                                                   epochs=12),
+                 lambda: GRUKMeansSelector(batch_size=4, seed_batch=8, epochs=12)):
+        picks = []
+        for table in (honest, poison):
+            seen = []
+
+            class Rec(type(make())):
+                def select(self, candidates, remaining, history):
+                    p_ = super().select(candidates, remaining, history)
+                    seen.append(p_)
+                    return p_
+
+            sel = make()
+            sel.__class__ = Rec
+            # stop_when_complete off on purpose: the poisoned table reaches full
+            # coverage immediately, so with early stopping that arm would run
+            # fewer picks and the two lists couldn't be compared.
+            run_selection(sel, npool, table, 24, random.Random(5),
+                          stop_when_complete=False)
+            picks.append(list(seen))
+            seen.clear()
+        same = picks[0] == picks[1]
+        where = next((i for i, (a, b) in enumerate(zip(*picks)) if a != b), None)
+        check(f"{make().name} picks are unchanged by poisoned coverage", same,
+              "identical" if same else
+              (f"differed at pick {where}" if where is not None
+               else f"lengths {len(picks[0])} vs {len(picks[1])}"))
 
     print("\nselection harness")
     curve = run_selection(RandomSelector(), pool, vecs, 12, random.Random(1))
